@@ -1,0 +1,11 @@
+.DS_Store
+sa_qy.py
+
+gset/robots.txt
+gset/yyye/Gset/ecut*
+gset/yyye/Gset/*.c
+gset/yyye/Gset/*.readme
+gset/yyye/Gset/*.html*
+gset/yyye/Gset/Makefile
+gset/yyye/Gset/max*
+gset/yyye/Gset/stable*
