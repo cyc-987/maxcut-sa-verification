@@ -4,77 +4,7 @@ import random
 import torch
 import sys
 import tqdm
-
-class Question:
-    def __init__(self, 
-                 problemset_index: int):
-        '''
-        初始化问题 \n
-        problemset_index: 问题集编号
-        '''
-        # 环境变量
-        self.filepath_head = "./gset/yyye/Gset/G"
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Device type: {self.device}")
-        
-        # 参数
-        self.problemset_index = problemset_index # 问题集编号
-        print(f"Index selected: {self.problemset_index}")
-        self.path = self.filepath_head + str(self.problemset_index) # 文件路径
-        self.node_num = 0 # 节点数
-        self.edge_num = 0 # 边数
-        self.matrix = None # 邻接矩阵
-        self.matrix_active_num_check = 0 # 邻接矩阵节点数检查
-        
-        # 读文件
-        self._ReadFileContent()
-        # 检查邻接矩阵
-        self._CheckMatrix()
-        
-    def _ReadFileContent(self):
-        '''
-        读取文件内容
-        '''
-        with open(self.path, "r") as f:
-            # 读取第一行，获取节点数和边数
-            firstline = f.readline()
-            self.node_num, self.edge_num = firstline.split()
-            self.node_num = int(self.node_num)
-            self.edge_num = int(self.edge_num)
-            
-            # 初始化邻接矩阵
-            self.matrix = np.zeros((int(self.node_num), int(self.node_num)))
-            lines = f.read().splitlines()
-            lines_num = len(lines)
-            for i in range(int(lines_num)):
-                aline = lines[i]
-                node1, node2, weight = aline.split()
-                self.matrix[int(node1)-1][int(node2)-1] = int(weight)
-                self.matrix[int(node2)-1][int(node1)-1] = int(weight)
-            
-            self.matrix = torch.tensor(self.matrix, dtype=torch.float32).to(self.device)
-            print(f"Read file \"{self.path}\" successfully, read {self.node_num} nodes and {self.edge_num} edges.")
- 
-    def _CheckMatrix(self):
-        '''
-        检查邻接矩阵是否正确
-        '''
-        active_num = torch.sum(self.matrix != 0).item()
-        self.matrix_active_num_check = active_num
-        print(f"Check matrix: active number: {active_num}.")
-        
-        # 检查对称性
-        if not torch.all(self.matrix == self.matrix.t()):
-            print(f"Check matrix: not symmetric!")
-            sys.exit()
-        
-        # 检查对角线
-        if torch.any(torch.diagonal(self.matrix) != 0):
-            print(f"Check matrix: diagonal wrong!")
-            sys.exit()
-        
-        print("Check matrix: correct.")
- 
+from Question import Question
 class SA:
     def __init__(self, 
                  question: Question, # 问题
@@ -149,6 +79,7 @@ class SA:
         求解 \n
         output: 是否输出结果（包括tqdm进度条）
         '''
+        count = 0
         temp = self.temp_initial
         # 生成历史记录数组
         energy_history = []
@@ -164,15 +95,18 @@ class SA:
         cut_value = torch.sum(torch.triu(self.question.matrix, diagonal=1) * 0.5 * (1 - torch.ger(X, X)))
         # 降温
         temp *= self.alpha
+        count += 1
         
         # 记录历史
         energy_history.append(energy.item())
         cut_value_history.append(cut_value.item())
+        if(output):print("----------Solve Start----------")
         if(output):print(f"Initial energy: {energy.item()}, initial cut value: {cut_value.item()}.")
         
         # 迭代
         for iteration in tqdm.tqdm(range(self.iter), disable=not output):
             # 生成新解
+            accept = True
             X_new, flip_index = self._GenerateNewX(X, flip_num=2)
             delta_E = self._CalDeltaE(X, X_new, flip_index)
             
@@ -184,22 +118,155 @@ class SA:
                 if random_number < math.exp(-delta_E.item() / temp):
                     X = X_new
                 else:
-                    pass
+                    accept = False
             
-            # 后计算
+            count += 1
+            temp = self._RecordHistory(X, energy_history, cut_value_history, temp, accept)
+        
+        if(output):print(f"Iteration finished, total number of generated solutions: {count}.")
+        if(output):print(f"Final energy: {energy_history[-1]}, final cut value: {cut_value_history[-1]}.")
+        if(output):print("----------Solve Finished----------")
+        self.solve_times += 1
+        self.solution_energy.append(energy_history[-1])
+        self.solution_cut_value.append(cut_value_history[-1])
+        
+        return energy_history, cut_value_history
+    
+    def _RecordHistory(self, X, 
+                       energy_history: list, cut_value_history: list, 
+                       temp: float, update: bool):
+        '''
+        记录历史 \n
+        返回值：新温度（降温后）
+        '''
+        if update:
+        # 后计算
             energy = torch.dot(X, torch.mv(self.question.matrix, X))
             cut_value = torch.sum(torch.triu(self.question.matrix, diagonal=1) * 0.5 * (1 - torch.ger(X, X)))
-            temp *= self.alpha
             
             # 记录历史
             energy_history.append(energy.item())
             cut_value_history.append(cut_value.item())
+            
+        temp *= self.alpha
+        return temp
+    
+    def ParallelSolve(self, 
+                      t1: float=0.8, 
+                      t2: float=0.5, 
+                      output: bool=True):
+        '''
+        并行求解 \n
+        策略：温度大于t1，四路并行赌博求解；温度在t2和t1之间，两路并行赌博求解；温度小于t2，串行赌博求解 \n
+        t1: 温度阈值1 \n
+        t2: 温度阈值2 \n
+        t1和t2均为0-1之间的小数，代表相对于初始温度的比例
+        '''
+        temp1 = self.temp_initial * t1
+        temp2 = self.temp_initial * t2
+
+        count = 0
+        temp = self.temp_initial
+        # 生成历史记录数组
+        energy_history = []
+        cut_value_history = []
+        # 生成初始解（全1）
+        X = np.ones(self.question.node_num)
+        X = torch.tensor(X, dtype=torch.float32).to(self.device)
+        self._CheckX(X)
         
-        if(output):print(f"Iteration finished, total iteration: {self.iter}.")
-        if(output):print(f"Final energy: {energy.item()}, final cut value: {cut_value.item()}.")
+        # 计算能量
+        energy = torch.dot(X, torch.mv(self.question.matrix, X))
+        # 计算cut值
+        cut_value = torch.sum(torch.triu(self.question.matrix, diagonal=1) * 0.5 * (1 - torch.ger(X, X)))
+        # 降温
+        temp *= self.alpha
+        count += 1
+        
+        # 记录历史
+        energy_history.append(energy.item())
+        cut_value_history.append(cut_value.item())
+        if(output):print("----------Parallel Solve Start----------")
+        if(output):print(f"Initial energy: {energy.item()}, initial cut value: {cut_value.item()}.")
+
+        # 迭代
+        for iteration in tqdm.tqdm(range(self.iter), disable=not output):
+            # 生成新解
+            if temp > temp1:
+                X_new_1, flip_index_1 = self._GenerateNewX(X, flip_num=2)
+                X_new_2, flip_index_2 = self._GenerateNewX(X_new_1, flip_num=2)
+                X_new_3, flip_index_3 = self._GenerateNewX(X_new_2, flip_num=2)
+                X_new_4, flip_index_4 = self._GenerateNewX(X_new_3, flip_num=2)
+                
+                end = False # 结束标志
+                # 无条件检测第一个解
+                delta_E = self._CalDeltaE(X, X_new_1, flip_index_1)
+                if delta_E <= 0:
+                    X = X_new_1
+                else:
+                    random_number = random.uniform(0, 1)
+                    if random_number < math.exp(-delta_E.item() / temp):
+                        X = X_new_1
+                    else: end = True # 如果不接受，丢弃后面全部解
+                temp = self._RecordHistory(X, energy_history, cut_value_history, temp, not end)
+                count += 1
+                
+                # 检测第二个解
+                if not end:
+                    delta_E = self._CalDeltaE(X, X_new_2, flip_index_2)
+                    if delta_E <= 0:
+                        X = X_new_2
+                    else:
+                        random_number = random.uniform(0, 1)
+                        if random_number < math.exp(-delta_E.item() / temp):
+                            X = X_new_2
+                        else: end = True
+                    temp = self._RecordHistory(X, energy_history, cut_value_history, temp, not end)
+                    count += 1
+                
+                # 检测第三个解
+                if not end:
+                    delta_E = self._CalDeltaE(X, X_new_3, flip_index_3)
+                    if delta_E <= 0:
+                        X = X_new_3
+                    else:
+                        random_number = random.uniform(0, 1)
+                        if random_number < math.exp(-delta_E.item() / temp):
+                            X = X_new_3
+                        else: end = True
+                    temp = self._RecordHistory(X, energy_history, cut_value_history, temp, not end)
+                    count += 1
+                
+                # 检测第四个解
+                if not end:
+                    delta_E = self._CalDeltaE(X, X_new_4, flip_index_4)
+                    if delta_E <= 0:
+                        X = X_new_4
+                    else:
+                        random_number = random.uniform(0, 1)
+                        if random_number < math.exp(-delta_E.item() / temp):
+                            X = X_new_4
+                        else: end = True
+                    temp = self._RecordHistory(X, energy_history, cut_value_history, temp, not end)
+                    count += 1
+                
+            
+            elif temp <= temp1 and temp > temp2:
+                pass
+                # TBD
+        
+        
+        
+        if(output):print(f"Iteration finished, total number of generated solutions: {count}.")
+        if(output):print(f"Final energy: {energy_history[-1]}, final cut value: {cut_value_history[-1]}.")
+        if(output):print("----------Parallel Solve Finished----------")
         self.solve_times += 1
-        self.solution_energy.append(energy.item())
-        self.solution_cut_value.append(cut_value.item())
+        self.solution_energy.append(energy_history[-1])
+        self.solution_cut_value.append(cut_value_history[-1])
+        
+        return energy_history, cut_value_history
+
+        
         
     def MultiSolver(self, 
                     times: int=2):
@@ -242,4 +309,5 @@ if __name__ == '__main__':
     
     sa = SA(problem, iter=1000)
     sa.Solve()
-    sa.MultiSolver(10)
+    # sa.MultiSolver(10)
+    sa.ParallelSolve(t1=0)

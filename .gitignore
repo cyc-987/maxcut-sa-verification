@@ -1,5 +1,6 @@
 .DS_Store
 sa_qy.py
+__pycache__
 
 gset/robots.txt
 gset/yyye/Gset/ecut*
