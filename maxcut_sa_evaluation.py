@@ -10,18 +10,21 @@ class SA:
                  question: Question, # 问题
                  T_initial: int=1000, # 初始温度
                  alpha: float=0.999, # 降温系数
-                 iter: int=1000): # 迭代次数
+                 iter: int=1000, # 迭代次数
+                 auto_alpha: bool=False # 是否自动调整alpha
+                 ): 
         '''
         初始化模拟退火算法 \n
         question: 问题 \n
         T_initial: 初始温度 \n
         alpha: 降温系数 \n
-        iter: 迭代次数
+        iter: 迭代次数 \n
+        auto_alpha: 是否自动调整alpha
         '''
         # 参数
         self.question = question
         self.temp_initial = T_initial
-        self.alpha = alpha
+        self.alpha = alpha if not auto_alpha else (1 - (1 / iter))
         self.iter = iter
         self.device = self.question.device
         
@@ -30,7 +33,8 @@ class SA:
         self.solution_energy = []
         self.solution_cut_value = []
         
-        print(f"SA algorithm initialized, initial temperature: {self.temp_initial}, alpha: {self.alpha}, iteration: {self.iter}.") 
+        alpha_for_print = "auto" if auto_alpha else "manual" 
+        print(f"SA algorithm initialized, initial temperature: {self.temp_initial}, alpha: {self.alpha}({alpha_for_print}), iteration: {self.iter}.") 
     
     def _GenerateNewX(self,
                       X,
@@ -188,6 +192,7 @@ class SA:
         cut_value_history.append(cut_value.item())
         if(output):print("----------Parallel Solve Start----------")
         if(output):print(f"Initial energy: {energy.item()}, initial cut value: {cut_value.item()}.")
+        if(output):print(f"Temperature settings: 0 <--- {temp2} <--- {temp1} <--- {self.temp_initial}.")
 
         # 迭代
         for iteration in tqdm.tqdm(range(self.iter), disable=not output):
@@ -250,12 +255,90 @@ class SA:
                     temp = self._RecordHistory(X, energy_history, cut_value_history, temp, not end)
                     count += 1
                 
-            
+            # 两路并行
             elif temp <= temp1 and temp > temp2:
+                # 生成新解
+                X_new_1, flip_index_1 = self._GenerateNewX(X, flip_num=2)
+                X_new_2, flip_index_2 = self._GenerateNewX(X, flip_num=2)
+                X_new_1_child, flip_index_1_child = self._GenerateNewX(X_new_1, flip_num=2)
+                X_new_2_child, flip_index_2_child = self._GenerateNewX(X_new_2, flip_num=2)
+                end1 = end2 = False # 结束标志
+                
+                # 首先判断第一层
+                delta_E_1 = self._CalDeltaE(X, X_new_1, flip_index_1)
+                delta_E_2 = self._CalDeltaE(X, X_new_2, flip_index_2)
+                
+                # 都小于0，选取能量更小的
+                if delta_E_1 <= 0 and delta_E_2 <= 0:
+                    if delta_E_1 < delta_E_2:
+                        X = X_new_1
+                        end2 = True
+                    else:
+                        X = X_new_2
+                        end1 = True
+                # 一个小于0，一个大于0，直接接受小于0的
+                elif delta_E_1 <= 0 and delta_E_2 > 0:
+                    X = X_new_1
+                    end2 = True
+                elif delta_E_1 > 0 and delta_E_2 <= 0:
+                    X = X_new_2
+                    end1 = True
+                else:
+                    # 都大于0，判断是否接受
+                    random_number = random.uniform(0, 1)
+                    if random_number >= math.exp(-delta_E_1.item() / temp):
+                        end1 = True
+                    random_number = random.uniform(0, 1)
+                    if random_number >= math.exp(-delta_E_2.item() / temp):
+                        end2 = True
+                    # 如果都不接受，丢弃
+                    if end1 and end2:
+                        pass
+                    # 如果只有一个接受，接受
+                    elif end1:
+                        X = X_new_2
+                    elif end2:
+                        X = X_new_1
+                    # 如果都接受，选取能量更小的
+                    else:
+                        if delta_E_1 < delta_E_2:
+                            X = X_new_1
+                            end2 = True
+                        else:
+                            X = X_new_2
+                            end1 = True
+                temp = self._RecordHistory(X, energy_history, cut_value_history, temp, not (end1 and end2))
+                count += 1
+                
+                # 判断第二层
+                update_child = True
+                if not (end1 and end2): # 第一层两个全部不接受，不用判断第二层
+                    update_child = False
+                elif not end1: # 接受了第一个解，判断第一个解后续
+                    delta_E_1_child = self._CalDeltaE(X, X_new_1_child, flip_index_1_child)
+                    if delta_E_1_child <= 0:
+                        X = X_new_1_child
+                    else:
+                        random_number = random.uniform(0, 1)
+                        if random_number < math.exp(-delta_E_1_child.item() / temp):
+                            X = X_new_1_child
+                        else: update_child = False
+                elif not end2: # 接受了第二个解，判断第二个解后续
+                    delta_E_2_child = self._CalDeltaE(X, X_new_2_child, flip_index_2_child)
+                    if delta_E_2_child <= 0:
+                        X = X_new_2_child
+                    else:
+                        random_number = random.uniform(0, 1)
+                        if random_number < math.exp(-delta_E_2_child.item() / temp):
+                            X = X_new_2_child
+                        else: update_child = False
+                temp = self._RecordHistory(X, energy_history, cut_value_history, temp, update_child)
+                count += 1
+
+            # 串行求解
+            else:
                 pass
                 # TBD
-        
-        
         
         if(output):print(f"Iteration finished, total number of generated solutions: {count}.")
         if(output):print(f"Final energy: {energy_history[-1]}, final cut value: {cut_value_history[-1]}.")
@@ -307,7 +390,8 @@ if __name__ == '__main__':
     index = 1
     problem = Question(index)
     
-    sa = SA(problem, iter=1000)
+    sa = SA(problem, iter=100, auto_alpha=True)
     sa.Solve()
     # sa.MultiSolver(10)
     sa.ParallelSolve(t1=0)
+    sa.ParallelSolve(t2=0)
