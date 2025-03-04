@@ -335,10 +335,34 @@ class SA:
                 temp = self._RecordHistory(X, energy_history, cut_value_history, temp, update_child)
                 count += 1
 
-            # 串行求解
+            # 串行求解，上一个解生成四个解
             else:
-                pass
-                # TBD
+                X_new = []
+                flip_index = []
+                delta_E = []
+                update = True
+                # 生成新解
+                for i in range(4):
+                    X_new_i, flip_index_i = self._GenerateNewX(X, flip_num=2)
+                    X_new.append(X_new_i)
+                    flip_index.append(flip_index_i)
+                    delta_E.append(self._CalDeltaE(X, X_new_i, flip_index_i))
+                
+                # 选取能量最小的解
+                min_index = delta_E.index(min(delta_E))
+                if delta_E[min_index] <= 0:
+                    X = X_new[min_index]
+                else:
+                    random_number = random.uniform(0, 1)
+                    if random_number < math.exp(-delta_E[min_index].item() / temp):
+                        X = X_new[min_index]
+                    else:
+                        update = False
+                temp = self._RecordHistory(X, energy_history, cut_value_history, temp, update)
+                count += 1
+                    
+                
+                
         
         if(output):print(f"Iteration finished, total number of generated solutions: {count}.")
         if(output):print(f"Final energy: {energy_history[-1]}, final cut value: {cut_value_history[-1]}.")
@@ -390,8 +414,9 @@ if __name__ == '__main__':
     index = 1
     problem = Question(index)
     
-    sa = SA(problem, iter=100, auto_alpha=True)
+    sa = SA(problem, iter=1000, auto_alpha=True)
     sa.Solve()
     # sa.MultiSolver(10)
     sa.ParallelSolve(t1=0)
     sa.ParallelSolve(t2=0)
+    sa.ParallelSolve()
