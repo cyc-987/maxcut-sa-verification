@@ -390,7 +390,22 @@ class SA:
         best_energy_index = self.solution_energy.index(best_energy)
         best_cut_value = self.solution_cut_value[best_energy_index]
         print(f"Multi-solving finished, best energy: {best_energy}, best cut value: {best_cut_value}, index: {best_energy_index}.")
+    
+    
+    def CalculateSavings(self):
+        '''
+        计算节省率 \n
+        '''
+        nodes = self.question.node_num
+        elements = self.question.matrix_active_num_check
         
+        old_num = nodes * nodes
+        new_num = 64 * elements + 4 * elements
+        
+        saving_rate = new_num / old_num
+        print(f"Saving rate: {saving_rate}.")
+        
+        return saving_rate
         
         
     def _CheckX(self, X):
@@ -409,14 +424,39 @@ class SA:
             print(f"\n")
             sys.exit()
 
-
-if __name__ == '__main__':
-    index = 1
+def solve():
+    index = 11
     problem = Question(index)
     
     sa = SA(problem, iter=1000, auto_alpha=True)
     sa.Solve()
-    # sa.MultiSolver(10)
+    sa.MultiSolver(10)
     sa.ParallelSolve(t1=0)
     sa.ParallelSolve(t2=0)
     sa.ParallelSolve()
+
+def drawSavings():
+    indexs = []
+    indexs += list(range(1, 68))
+    indexs += [70, 72, 77, 81]
+    results = []
+    try :
+        results = np.load("runtime_files/savingsData.npy", allow_pickle=True)
+        results = results.tolist()
+    except:
+        for index in indexs:
+            problem = Question(index)
+            sa = SA(problem)
+            results.append(sa.CalculateSavings())
+        print(results)
+        np.save("runtime_files/savingsData.npy", results)
+    
+    import matplotlib.pyplot as plt
+    plt.plot(indexs, results, marker="o")
+    plt.grid()
+    plt.xlabel("Index")
+    plt.ylabel("Savings rate")
+    plt.show()
+
+if __name__ == '__main__':
+    drawSavings()
